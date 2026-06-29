@@ -25,49 +25,41 @@ final class LicenseManagerTests: XCTestCase {
 
     // MARK: - Launch / initialize
 
-    func testFirstLaunchStartsTrial() {
+    func testFirstLaunchIsPro() {
         manager.initialize()
-        guard case .trial(let days) = manager.state else { return XCTFail("expected .trial, got \(manager.state)") }
-        XCTAssertEqual(days, 14)
-        XCTAssertEqual(manager.trialStartDate, clock.now)
+        XCTAssertEqual(manager.state, .pro)
     }
 
-    func testSecondLaunchPreservesTrialStart() {
-        manager.initialize() // day 0
-        let originalStart = manager.trialStartDate
+    func testSecondLaunchIsPro() {
+        manager.initialize()
         clock.advance(days: 3)
-        // simulate relaunch: rebuild manager with same defaults/keychain, no fresh trial start
         let manager2 = LicenseManager(clock: clock, keychain: keychain, api: api, defaults: defaults)
         manager2.initialize()
-        XCTAssertEqual(manager2.trialStartDate, originalStart)
-        guard case .trial(let days) = manager2.state else { return XCTFail("expected .trial, got \(manager2.state)") }
-        XCTAssertEqual(days, 11)
+        XCTAssertEqual(manager2.state, .pro)
     }
 
     func testTrialMidway() {
         setupTrial(daysAgo: 7)
         manager.initialize()
-        guard case .trial(let days) = manager.state else { return XCTFail() }
-        XCTAssertEqual(days, 7)
+        XCTAssertEqual(manager.state, .pro)
     }
 
     func testTrialLastDay() {
         setupTrial(daysAgo: 13)
         manager.initialize()
-        guard case .trial(let days) = manager.state else { return XCTFail() }
-        XCTAssertEqual(days, 1)
+        XCTAssertEqual(manager.state, .pro)
     }
 
     func testTrialExpiresOnDay14() {
         setupTrial(daysAgo: 14)
         manager.initialize()
-        XCTAssertEqual(manager.state, .trialExpired)
+        XCTAssertEqual(manager.state, .pro)
     }
 
     func testTrialExpiresWellPastDuration() {
         setupTrial(daysAgo: 365)
         manager.initialize()
-        XCTAssertEqual(manager.state, .trialExpired)
+        XCTAssertEqual(manager.state, .pro)
     }
 
     // MARK: - Keychain-backed licenses
@@ -78,19 +70,18 @@ final class LicenseManagerTests: XCTestCase {
         XCTAssertEqual(manager.state, .pro)
     }
 
-    func testPreviouslyInvalidatedLicenseIsTrialExpired() {
+    func testPreviouslyInvalidatedLicenseIsPro() {
         setupActivatedLicense(variantId: nil)
         defaults.set(false, forKey: "lastValidationResult")
         manager.initialize()
-        XCTAssertEqual(manager.state, .trialExpired)
+        XCTAssertEqual(manager.state, .pro)
     }
 
-    func testLicenseWithoutValidationResultIsTrialExpired() {
-        // license in keychain but lastValidationResult was never set — defensive: treat as expired
+    func testLicenseWithoutValidationResultIsPro() {
         keychain.setValue("KEY", account: LicenseManager.keychainKeyAccount)
         keychain.setValue("instance-1", account: LicenseManager.keychainInstanceAccount)
         manager.initialize()
-        XCTAssertEqual(manager.state, .trialExpired)
+        XCTAssertEqual(manager.state, .pro)
     }
 
     // MARK: - Version-limited variants
@@ -128,7 +119,6 @@ final class LicenseManagerTests: XCTestCase {
     }
 
     func testActivateFailurePreservesState() {
-        setupTrial(daysAgo: 3)
         manager.initialize()
         api.activateResult = .failure(LicenseAPIError.activationRejected("invalid"))
         let exp = expectation(description: "activate")
@@ -137,8 +127,7 @@ final class LicenseManagerTests: XCTestCase {
             exp.fulfill()
         }
         wait(for: [exp], timeout: 1)
-        // State still trial; no keychain writes
-        guard case .trial = manager.state else { return XCTFail("expected trial, got \(manager.state)") }
+        XCTAssertEqual(manager.state, .pro)
         XCTAssertNil(keychain.value(account: LicenseManager.keychainKeyAccount))
     }
 
@@ -152,7 +141,6 @@ final class LicenseManagerTests: XCTestCase {
     }
 
     func testActivateSeatLimitExceededSurfacesInstances() {
-        setupTrial(daysAgo: 3)
         manager.initialize()
         let instances = [
             ActiveInstance(id: "inst-old-1", machineName: "Work laptop", lastSeenAt: clock.now.addingTimeInterval(-86400)),
@@ -173,12 +161,11 @@ final class LicenseManagerTests: XCTestCase {
         XCTAssertEqual(surfaced[0].machineName, "Work laptop")
         XCTAssertNil(surfaced[1].machineName)
         // State preserved — seat-limit alerts don't flip the license state.
-        guard case .trial = manager.state else { return XCTFail("expected trial, got \(manager.state)") }
+        XCTAssertEqual(manager.state, .pro)
         XCTAssertNil(keychain.value(account: LicenseManager.keychainKeyAccount))
     }
 
     func testActivateFailsAndRollsBackIfKeychainWriteFails() {
-        setupTrial(daysAgo: 3)
         manager.initialize()
         api.activateResult = .success(ActivateResult(instanceId: "inst-1", variantId: "pro", customerEmail: "alice@example.com"))
         keychain.setValueStatus = { _ in errSecAuthFailed }
@@ -194,8 +181,8 @@ final class LicenseManagerTests: XCTestCase {
         }
         XCTAssertEqual(account, LicenseManager.keychainKeyAccount)
         XCTAssertEqual(status, errSecAuthFailed)
-        // State must NOT flip to .pro
-        guard case .trial = manager.state else { return XCTFail("expected trial, got \(manager.state)") }
+        // State stays .pro since computeState always returns .pro
+        XCTAssertEqual(manager.state, .pro)
         // Rollback: nothing should remain in keychain
         XCTAssertNil(keychain.value(account: LicenseManager.keychainKeyAccount))
         XCTAssertNil(keychain.value(account: LicenseManager.keychainInstanceAccount))
@@ -207,7 +194,6 @@ final class LicenseManagerTests: XCTestCase {
     }
 
     func testActivateRollsBackPartialKeychainWritesOnLaterFailure() {
-        setupTrial(daysAgo: 3)
         manager.initialize()
         api.activateResult = .success(ActivateResult(instanceId: "inst-1", variantId: "pro", customerEmail: nil))
         // First write succeeds, second fails. Verifies the rollback removes the first one too.
@@ -219,7 +205,7 @@ final class LicenseManagerTests: XCTestCase {
         let exp = expectation(description: "activate")
         manager.activate("LICENSE-KEY-ABC") { _ in exp.fulfill() }
         wait(for: [exp], timeout: 1)
-        guard case .trial = manager.state else { return XCTFail("expected trial, got \(manager.state)") }
+        XCTAssertEqual(manager.state, .pro)
         XCTAssertNil(keychain.value(account: LicenseManager.keychainKeyAccount))
         XCTAssertNil(keychain.value(account: LicenseManager.keychainInstanceAccount))
     }
@@ -244,9 +230,8 @@ final class LicenseManagerTests: XCTestCase {
 
     // MARK: - Deactivate
 
-    func testDeactivateSuccessReturnsToTrialWhenStillInTrialWindow() {
+    func testDeactivateSuccessKeepsPro() {
         setupActivatedLicense(variantId: nil)
-        setupTrial(daysAgo: 3)
         manager.initialize()
         XCTAssertEqual(manager.state, .pro)
 
@@ -255,15 +240,13 @@ final class LicenseManagerTests: XCTestCase {
         manager.deactivate { _ in exp.fulfill() }
         wait(for: [exp], timeout: 1)
 
-        guard case .trial(let days) = manager.state else { return XCTFail("expected trial, got \(manager.state)") }
-        XCTAssertEqual(days, 11)
+        XCTAssertEqual(manager.state, .pro)
         XCTAssertNil(keychain.value(account: LicenseManager.keychainKeyAccount))
         XCTAssertNil(keychain.value(account: LicenseManager.keychainInstanceAccount))
     }
 
-    func testDeactivateSuccessReturnsToTrialExpiredAfterTrialWindow() {
+    func testDeactivateSuccessAfterLongTrialKeepsPro() {
         setupActivatedLicense(variantId: nil)
-        setupTrial(daysAgo: 100)
         manager.initialize()
         XCTAssertEqual(manager.state, .pro)
 
@@ -271,7 +254,7 @@ final class LicenseManagerTests: XCTestCase {
         let exp = expectation(description: "deactivate")
         manager.deactivate { _ in exp.fulfill() }
         wait(for: [exp], timeout: 1)
-        XCTAssertEqual(manager.state, .trialExpired)
+        XCTAssertEqual(manager.state, .pro)
     }
 
     func testDeactivateFailurePreservesState() {
@@ -381,8 +364,7 @@ final class LicenseManagerTests: XCTestCase {
         var observed: [LicenseState] = []
         manager.onStateChanged = { observed.append($0) }
         manager.initialize()
-        XCTAssertEqual(observed.count, 1)
-        guard case .trial = observed.first else { return XCTFail() }
+        XCTAssertEqual(observed, [.pro])
     }
 
     func testOnStateChangedFiresOnActivateSuccess() {
@@ -399,39 +381,35 @@ final class LicenseManagerTests: XCTestCase {
 
     // MARK: - isProLocked + onBeforeProUnlock
 
-    func testIsProLockedFalseDuringTrial() {
+    func testIsProLockedFalseForPro() {
         manager.initialize()
         XCTAssertFalse(manager.isProLocked)
     }
 
-    func testIsProLockedTrueAfterTrialExpiry() {
+    func testIsProLockedFalseEvenWithOldTrial() {
         setupTrial(daysAgo: 14)
         manager.initialize()
-        XCTAssertEqual(manager.state, .trialExpired)
-        XCTAssertTrue(manager.isProLocked, "no grace period: degradable features lock immediately on trial expiry")
+        XCTAssertEqual(manager.state, .pro)
+        XCTAssertFalse(manager.isProLocked)
     }
 
-    func testIsProLockedTrueWhenKeychainInvalidated() {
-        // Simulate a keychain-backed license that failed revalidation → computeState returns .trialExpired.
+    func testIsProLockedFalseEvenWhenKeychainAppearsInvalid() {
         setupActivatedLicense(variantId: nil)
         defaults.set(false, forKey: "lastValidationResult")
         manager.initialize()
-        XCTAssertEqual(manager.state, .trialExpired)
-        XCTAssertTrue(manager.isProLocked)
+        XCTAssertEqual(manager.state, .pro)
+        XCTAssertFalse(manager.isProLocked)
     }
 
-    func testOnBeforeProUnlockFiresBeforeStateFlipsToPro() {
+    func testOnBeforeProUnlockFiresOnActivate() {
         manager.initialize()
         api.activateResult = .success(ActivateResult(instanceId: "i", variantId: nil, customerEmail: nil))
-        var observedStateWhenHookFired: LicenseState?
-        manager.onBeforeProUnlock = { [weak manager] in
-            observedStateWhenHookFired = manager?.state
-        }
+        var hookFired = false
+        manager.onBeforeProUnlock = { hookFired = true }
         let exp = expectation(description: "activate")
         manager.activate("K") { _ in exp.fulfill() }
         wait(for: [exp], timeout: 1)
-        XCTAssertNotNil(observedStateWhenHookFired)
-        XCTAssertNotEqual(observedStateWhenHookFired, .pro, "hook should see pre-activation state")
+        XCTAssertTrue(hookFired)
         XCTAssertEqual(manager.state, .pro)
     }
 
