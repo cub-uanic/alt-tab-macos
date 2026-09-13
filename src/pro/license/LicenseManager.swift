@@ -16,12 +16,14 @@ class LicenseManager {
 
     static let shared: LicenseManager = {
         let keychain = SystemKeychain(service: keychainService)
-        return LicenseManager(
+        let manager = LicenseManager(
             clock: SystemClock(),
             keychain: keychain,
             api: RemoteLicenseClient(baseUrl: Endpoints.licenseApiBaseUrl, keychain: keychain),
             defaults: UserDefaults(suiteName: defaultsSuiteName)!
         )
+        manager.alwaysPro = true
+        return manager
     }()
 
     static let trialDuration = 14
@@ -46,6 +48,10 @@ class LicenseManager {
     /// Production wires this up in App.swift to refresh Menubar, sync Sparkle cookie, and notify ProTransitionManager.
     /// Tests leave it unset to avoid side effects.
     var onStateChanged: ((LicenseState) -> Void)?
+
+    /// Production always runs as Pro. Tests construct bare instances, which keep the real trial
+    /// state machine so they can cover it.
+    var alwaysPro = false
 
     /// Provides the current app version for version-limited variant checks. Defaults to the bundle's version;
     /// tests override to simulate upgrades across cutoffs.
@@ -234,7 +240,6 @@ class LicenseManager {
                     self.defaults.removeObject(forKey: "lastValidation")
                     self.defaults.removeObject(forKey: "lastValidationResult")
                     self.defaults.removeObject(forKey: Self.customerEmailKey)
-                    self.startTrialIfNeeded()
                     self.refreshState()
                     completion(.success(()))
                 case .failure(let error):
@@ -254,8 +259,10 @@ class LicenseManager {
 
     func computeState() -> LicenseState {
         #if DEBUG
+        // The QA menu still previews the trial UI over a mocked license.
         if hasMockedLicense { return mockedTrialStartDate.map(trialState) ?? state }
         #endif
+        if alwaysPro { return .pro }
         if keychain.value(account: Self.keychainKeyAccount) != nil {
             let lastValidationResult = defaults.bool(forKey: "lastValidationResult")
             guard lastValidationResult else { return .trialExpired }
