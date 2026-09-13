@@ -1,3 +1,10 @@
+## [11.6.2](https://github.com/cub-uanic/alt-tab-macos/compare/v11.6.1...v11.6.2) (2026-09-13)
+
+
+### Bug Fixes
+
+* always PRO ([a915f52](https://github.com/cub-uanic/alt-tab-macos/commit/a915f52))
+
 ## [11.6.1](https://github.com/lwouis/alt-tab-macos/compare/v11.6.0...v11.6.1) (2026-09-11)
 
 
